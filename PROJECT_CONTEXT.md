@@ -32,16 +32,16 @@ Template ready - Start by defining your first feature!
 
 ## Features Roadmap
 
-### Your Features Will Appear Here
+### Project Documentation Generator App
 
-Start by defining your first feature using the Requirements Engineer agent:
-```
-Read .claude/agents/requirements-engineer.md and create a feature spec for [your feature idea]
-```
+An AI-powered app that analyzes code repositories (Replit, Lovable, GitHub, GitLab) and generates comprehensive markdown documentation automatically.
 
-Example roadmap structure:
-- [PROJ-1] Your First Feature → 🔵 Planned → [Spec](/features/PROJ-1-feature-name.md)
-- [PROJ-2] Your Second Feature → ⚪ Backlog
+#### Core Features
+- [PROJ-1] Repository Connection & Authentication → 🔵 Planned → [Spec](/features/PROJ-1-repository-connection-authentication.md)
+- [PROJ-2] Repository Analysis Engine → 🔵 Planned → [Spec](/features/PROJ-2-repository-analysis-engine.md)
+- [PROJ-3] AI-Powered Documentation Generator → 🔵 Planned → [Spec](/features/PROJ-3-ai-documentation-generator.md)
+- [PROJ-4] Documentation Viewer & Export → 🔵 Planned → [Spec](/features/PROJ-4-documentation-viewer-export.md)
+- [PROJ-5] Auto-Update & Webhook Integration → 🔵 Planned → [Spec](/features/PROJ-5-auto-update-webhook-integration.md)
 
 ---
 
