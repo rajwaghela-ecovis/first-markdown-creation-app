@@ -20,61 +20,184 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { Github, GitlabIcon as GitLab, Link as LinkIcon, Key } from 'lucide-react'
+import { Github, Link as LinkIcon, Key, Loader2, CheckCircle } from 'lucide-react'
+import { createClient } from '@/lib/supabase/client'
+import { Repository, Platform, InsertRepository } from '@/types/database'
+import { toast } from 'sonner'
 
 interface ConnectRepositoryDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
+  onRepositoryAdded: (repo: Repository) => void
+  currentRepoCount: number
+  maxRepos: number
+}
+
+// URL patterns for validation
+const urlPatterns: Record<Platform, RegExp> = {
+  github: /^https?:\/\/(www\.)?github\.com\/[\w.-]+\/[\w.-]+\/?$/,
+  gitlab: /^https?:\/\/(www\.)?gitlab\.com\/[\w.-]+\/[\w.-]+\/?$/,
+  replit: /^https?:\/\/(www\.)?replit\.com\/@[\w.-]+\/[\w.-]+\/?$/,
+  lovable: /^https?:\/\/(www\.)?lovable\.(dev|app)\/[\w.-]+\/?$/,
+}
+
+// Extract repo info from URL
+function parseRepoUrl(url: string, platform: Platform): { owner: string; name: string } | null {
+  try {
+    const urlObj = new URL(url)
+    const pathParts = urlObj.pathname.split('/').filter(Boolean)
+    
+    if (platform === 'replit') {
+      // Replit: /@username/repl-name
+      if (pathParts.length >= 2 && pathParts[0].startsWith('@')) {
+        return {
+          owner: pathParts[0].substring(1),
+          name: pathParts[1],
+        }
+      }
+    } else {
+      // GitHub/GitLab/Lovable: /owner/repo
+      if (pathParts.length >= 2) {
+        return {
+          owner: pathParts[0],
+          name: pathParts[1],
+        }
+      }
+    }
+    return null
+  } catch {
+    return null
+  }
 }
 
 export function ConnectRepositoryDialog({
   open,
   onOpenChange,
+  onRepositoryAdded,
+  currentRepoCount,
+  maxRepos,
 }: ConnectRepositoryDialogProps) {
   const [activeTab, setActiveTab] = useState('url')
-  const [platform, setPlatform] = useState('github')
+  const [platform, setPlatform] = useState<Platform>('github')
   const [repoUrl, setRepoUrl] = useState('')
   const [apiToken, setApiToken] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState(false)
 
+  const supabase = createClient()
+
+  const resetForm = () => {
+    setRepoUrl('')
+    setApiToken('')
+    setError(null)
+    setSuccess(false)
+    setIsLoading(false)
+  }
+
+  const handleClose = () => {
+    resetForm()
+    onOpenChange(false)
+  }
+
+  const validateUrl = (url: string, plat: Platform): boolean => {
+    return urlPatterns[plat].test(url)
+  }
+
   const handleUrlConnect = async (e: React.FormEvent) => {
     e.preventDefault()
     setError(null)
     setIsLoading(true)
 
+    // Check repo limit
+    if (currentRepoCount >= maxRepos) {
+      setError(`Repository limit reached (${maxRepos}). Remove a repository to add a new one.`)
+      setIsLoading(false)
+      return
+    }
+
     // Validate URL format
+    if (!validateUrl(repoUrl, platform)) {
+      setError(`Invalid ${platform} URL format. Please check the URL and try again.`)
+      setIsLoading(false)
+      return
+    }
+
+    // Parse repo info from URL
+    const repoInfo = parseRepoUrl(repoUrl, platform)
+    if (!repoInfo) {
+      setError('Could not parse repository information from URL.')
+      setIsLoading(false)
+      return
+    }
+
     try {
-      const url = new URL(repoUrl)
-      
-      // Basic platform validation
-      if (platform === 'github' && !url.hostname.includes('github.com')) {
-        setError('Invalid GitHub URL. Expected format: https://github.com/username/repo')
-        setIsLoading(false)
-        return
-      }
-      
-      if (platform === 'gitlab' && !url.hostname.includes('gitlab.com')) {
-        setError('Invalid GitLab URL. Expected format: https://gitlab.com/username/repo')
+      // Check for duplicates
+      const { data: existing } = await supabase
+        .from('repositories')
+        .select('id')
+        .eq('repo_url', repoUrl)
+        .single()
+
+      if (existing) {
+        setError('This repository is already connected.')
         setIsLoading(false)
         return
       }
 
-      // TODO: Call API to connect repository
-      // For now, simulate success
-      await new Promise(resolve => setTimeout(resolve, 1000))
+      // Fetch metadata from API
+      let metadata = {}
+      let isPrivate = false
       
+      try {
+        const metadataResponse = await fetch('/api/repositories/fetch-metadata', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            platform,
+            owner: repoInfo.owner,
+            repo: repoInfo.name,
+          }),
+        })
+        
+        if (metadataResponse.ok) {
+          const metadataData = await metadataResponse.json()
+          metadata = metadataData.metadata || {}
+          isPrivate = metadataData.isPrivate || false
+        }
+      } catch (e) {
+        // Continue without metadata if fetch fails
+        console.warn('Failed to fetch metadata:', e)
+      }
+
+      // Insert repository
+      const newRepo: InsertRepository = {
+        platform,
+        repo_url: repoUrl,
+        repo_name: repoInfo.name,
+        repo_owner: repoInfo.owner,
+        is_private: isPrivate,
+        status: 'connected',
+        metadata,
+      }
+
+      const { data, error: insertError } = await supabase
+        .from('repositories')
+        .insert(newRepo)
+        .select()
+        .single()
+
+      if (insertError) throw insertError
+
       setSuccess(true)
+      onRepositoryAdded(data)
+      
       setTimeout(() => {
-        onOpenChange(false)
-        setSuccess(false)
-        setRepoUrl('')
-        setIsLoading(false)
+        handleClose()
       }, 1500)
       
-    } catch (err) {
-      setError('Invalid URL format')
+    } catch (err: any) {
+      setError(err.message || 'Failed to connect repository. Please try again.')
       setIsLoading(false)
     }
   }
@@ -90,36 +213,44 @@ export function ConnectRepositoryDialog({
       return
     }
 
-    // TODO: Call API to connect with token
-    // For now, simulate success
-    await new Promise(resolve => setTimeout(resolve, 1000))
-    
-    setSuccess(true)
-    setTimeout(() => {
-      onOpenChange(false)
-      setSuccess(false)
+    try {
+      // Save token to platform_tokens table
+      const { error: tokenError } = await supabase
+        .from('platform_tokens')
+        .upsert({
+          platform,
+          access_token: apiToken,
+          token_type: 'bearer',
+        }, {
+          onConflict: 'user_id,platform'
+        })
+
+      if (tokenError) throw tokenError
+
+      toast.success(`${platform} token saved! You can now connect repositories.`)
+      setActiveTab('url')
       setApiToken('')
       setIsLoading(false)
-    }, 1500)
+      
+    } catch (err: any) {
+      setError(err.message || 'Failed to save token. Please try again.')
+      setIsLoading(false)
+    }
   }
 
   const handleOAuthConnect = async (provider: 'github' | 'gitlab') => {
     setError(null)
-    setIsLoading(true)
-
-    // TODO: Implement OAuth flow
-    // For now, show coming soon message
-    setError(`${provider === 'github' ? 'GitHub' : 'GitLab'} OAuth coming soon!`)
-    setIsLoading(false)
+    toast.info(`${provider === 'github' ? 'GitHub' : 'GitLab'} OAuth coming soon!`)
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[600px]">
+    <Dialog open={open} onOpenChange={handleClose}>
+      <DialogContent className="sm:max-w-[550px]">
         <DialogHeader>
           <DialogTitle>Connect Repository</DialogTitle>
           <DialogDescription>
             Connect your repository from GitHub, GitLab, Replit, or Lovable
+            ({currentRepoCount}/{maxRepos} repositories used)
           </DialogDescription>
         </DialogHeader>
 
@@ -130,29 +261,32 @@ export function ConnectRepositoryDialog({
         )}
 
         {success && (
-          <Alert>
-            <AlertDescription>Repository connected successfully!</AlertDescription>
+          <Alert className="border-green-500/20 bg-green-500/10">
+            <CheckCircle className="h-4 w-4 text-green-500" />
+            <AlertDescription className="text-green-500">
+              Repository connected successfully!
+            </AlertDescription>
           </Alert>
         )}
 
         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
           <TabsList className="grid w-full grid-cols-3">
-            <TabsTrigger value="url">
-              <LinkIcon className="mr-2 h-4 w-4" />
+            <TabsTrigger value="url" className="flex items-center gap-2">
+              <LinkIcon className="h-4 w-4" />
               URL
             </TabsTrigger>
             <TabsTrigger value="oauth">OAuth</TabsTrigger>
-            <TabsTrigger value="token">
-              <Key className="mr-2 h-4 w-4" />
-              API Token
+            <TabsTrigger value="token" className="flex items-center gap-2">
+              <Key className="h-4 w-4" />
+              Token
             </TabsTrigger>
           </TabsList>
 
-          <TabsContent value="url" className="space-y-4">
+          <TabsContent value="url" className="space-y-4 mt-4">
             <form onSubmit={handleUrlConnect} className="space-y-4">
               <div className="space-y-2">
                 <Label htmlFor="platform">Platform</Label>
-                <Select value={platform} onValueChange={setPlatform}>
+                <Select value={platform} onValueChange={(v) => setPlatform(v as Platform)}>
                   <SelectTrigger id="platform">
                     <SelectValue placeholder="Select platform" />
                   </SelectTrigger>
@@ -160,7 +294,7 @@ export function ConnectRepositoryDialog({
                     <SelectItem value="github">GitHub</SelectItem>
                     <SelectItem value="gitlab">GitLab</SelectItem>
                     <SelectItem value="replit">Replit</SelectItem>
-                    <SelectItem value="lovable">Lovable (Coming Soon)</SelectItem>
+                    <SelectItem value="lovable">Lovable</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -175,12 +309,15 @@ export function ConnectRepositoryDialog({
                       ? 'https://github.com/username/repo'
                       : platform === 'gitlab'
                       ? 'https://gitlab.com/username/repo'
-                      : 'https://replit.com/@username/repo'
+                      : platform === 'replit'
+                      ? 'https://replit.com/@username/repo'
+                      : 'https://lovable.dev/project'
                   }
                   value={repoUrl}
                   onChange={(e) => setRepoUrl(e.target.value)}
                   required
-                  disabled={isLoading || platform === 'lovable'}
+                  disabled={isLoading || success}
+                  className="bg-background"
                 />
                 <p className="text-xs text-muted-foreground">
                   Paste the full URL of your repository
@@ -190,14 +327,26 @@ export function ConnectRepositoryDialog({
               <Button
                 type="submit"
                 className="w-full"
-                disabled={isLoading || platform === 'lovable'}
+                disabled={isLoading || success || currentRepoCount >= maxRepos}
               >
-                {isLoading ? 'Connecting...' : 'Connect Repository'}
+                {isLoading ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Connecting...
+                  </>
+                ) : success ? (
+                  <>
+                    <CheckCircle className="mr-2 h-4 w-4" />
+                    Connected!
+                  </>
+                ) : (
+                  'Connect Repository'
+                )}
               </Button>
             </form>
           </TabsContent>
 
-          <TabsContent value="oauth" className="space-y-4">
+          <TabsContent value="oauth" className="space-y-4 mt-4">
             <div className="space-y-3">
               <Button
                 variant="outline"
@@ -214,7 +363,9 @@ export function ConnectRepositoryDialog({
                 onClick={() => handleOAuthConnect('gitlab')}
                 disabled={isLoading}
               >
-                <GitLab className="mr-2 h-5 w-5" />
+                <svg className="mr-2 h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M22.65 14.39L12 22.13 1.35 14.39a.84.84 0 0 1-.3-.94l1.22-3.78 2.44-7.51A.42.42 0 0 1 4.82 2a.43.43 0 0 1 .58 0 .42.42 0 0 1 .11.18l2.44 7.49h8.1l2.44-7.51A.42.42 0 0 1 18.6 2a.43.43 0 0 1 .58 0 .42.42 0 0 1 .11.18l2.44 7.51L23 13.45a.84.84 0 0 1-.35.94z"/>
+                </svg>
                 Connect with GitLab
               </Button>
             </div>
@@ -223,11 +374,11 @@ export function ConnectRepositoryDialog({
             </p>
           </TabsContent>
 
-          <TabsContent value="token" className="space-y-4">
+          <TabsContent value="token" className="space-y-4 mt-4">
             <form onSubmit={handleTokenConnect} className="space-y-4">
               <div className="space-y-2">
                 <Label htmlFor="token-platform">Platform</Label>
-                <Select value={platform} onValueChange={setPlatform}>
+                <Select value={platform} onValueChange={(v) => setPlatform(v as Platform)}>
                   <SelectTrigger id="token-platform">
                     <SelectValue placeholder="Select platform" />
                   </SelectTrigger>
@@ -244,11 +395,12 @@ export function ConnectRepositoryDialog({
                 <Input
                   id="api-token"
                   type="password"
-                  placeholder="ghp_xxxxxxxxxxxx"
+                  placeholder={platform === 'github' ? 'ghp_xxxxxxxxxxxx' : 'glpat-xxxxxxxxxxxx'}
                   value={apiToken}
                   onChange={(e) => setApiToken(e.target.value)}
                   required
                   disabled={isLoading}
+                  className="bg-background"
                 />
                 <p className="text-xs text-muted-foreground">
                   {platform === 'github' && (
@@ -282,7 +434,14 @@ export function ConnectRepositoryDialog({
               </div>
 
               <Button type="submit" className="w-full" disabled={isLoading}>
-                {isLoading ? 'Connecting...' : 'Connect with Token'}
+                {isLoading ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Saving...
+                  </>
+                ) : (
+                  'Save Token'
+                )}
               </Button>
             </form>
           </TabsContent>
